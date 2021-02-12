@@ -1,0 +1,20 @@
+$(function() {
+    $('.fn-currency-change').on('change', function(){
+        // GA Event
+        window.dataLayer.push({
+            'event':'ga_event',
+            'event_cat':'sp_menu',
+            'event_act':'select',
+            'event_lab':'sp_menu_currency',
+            'event_val':1,
+            'event_non_int':true
+        });
+        console.log(window.dataLayer);
+    });
+    $('.fn-currency-change-form').on('change', '.fn-currency-change', function(){
+        var href = window.location.href;
+        replaceHref = href.replace(/\/fob_price_(from|to)=[0-9]*/g,'');
+        history.pushState(null, null, replaceHref);
+        $(this).parents('.fn-currency-change-form').submit();
+    });
+});

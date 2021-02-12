@@ -1,0 +1,1465 @@
+$(document).ready(function () {
+	var favoriter = {
+		run: function(params){
+
+			var button = $(params.target);
+			var vehId = button.attr('data-vehicle-id');
+			var goodsId = button.attr('data-goods-id');
+			
+			var status = button.attr('data-status');
+
+			var data = {
+				'status' : status
+			};
+			
+			if(vehId){
+				data['veh_id'] = vehId;
+			}else{
+				data['goods_id'] = goodsId;
+			}
+
+			button.attr('disabled', true);
+			$.ajax({
+				url			: '/ajax/favorite',
+				type		: 'post',
+				dataType	: 'json',
+				data		: data,
+				success: function(resp){
+					var targetButtons;
+					if(vehId){
+						targetButtons = $('.button-favorite-' + vehId);
+					}else{
+						targetButtons = $('.button-favorite-goods-' + goodsId);
+					}
+
+					var result_code = resp.status;
+					var data = resp.params;
+
+					if (result_code === 'not-logged-in') {
+						favoriter.forceLogin(targetButtons);
+						return false;
+					}
+
+					if (data.delete_flg === 0) {
+						//favorite added
+						targetButtons.removeClass('button-favorite-add').addClass('button-favorite-added');
+						targetButtons.attr('data-status', 'added');
+					} else {
+						//favorite removed
+						targetButtons.removeClass('button-favorite-added').addClass('button-favorite-add');
+						targetButtons.attr('data-status', 'add');
+					}
+				},
+				error: function(jqXHR, textStatus, errorThrown) {
+					//ERROR
+					alert('Service is temporarily disconnected. Please try again.');
+				} ,
+				complete: function(XMLHttpRequest, textStatus){
+					button.attr('disabled', false);
+				}
+			});
+		},
+		getAuthKey: function() {
+			var cookies = document.cookie.split('; ');
+			var len = cookies.length;
+			var authKey = '';
+			for(var i = 0; i < len; i++){
+				var str = cookies[i].split("=");
+				if(str[0] === 'BeforwardCookie[bf_secure_info]'){
+					var val = JSON.parse(decodeURIComponent(str[1]));
+					authKey = val.authkey;
+					break;
+				}
+			}
+			return authKey;
+		},
+		forceLogin: function(_self) {
+			
+			var vehId = $(_self).attr('data-vehicle-id');
+			var goodsId = $(_self).attr('data-goods-id');
+			
+			var urlCallback;
+			if(vehId){
+				urlCallback= $('#favorite-callbackurl-'+vehId).val();
+			}else{
+				urlCallback= $('#favorite-goods-callbackurl-'+goodsId).val();
+			}
+			
+			var view_lang = $("#view-lang-info input[name='view_lang']").val();	
+			if (view_lang != '') {
+				view_lang = '/' + view_lang;
+			}
+
+			$(location).attr('href', view_lang + '/favorite/forward/' + urlCallback);
+			return false;
+		}
+	};
+
+	$('#content').on('click', '.fn-discount-alert-button', function(e){
+		var authKey = favoriter.getAuthKey();
+		if(authKey === ''){
+			//IF NOT logged-in THEN goto login page
+			favoriter.forceLogin($(e.target));
+		} else {
+            click_button($(this).data('veh-id'));
+            return false;
+		}
+	});
+
+    var login_url = $('form[name=signin_form]').attr('action');
+    var authkey = cookie_check();
+    var is_stocklist = location.href.match(/stocklist/);
+    var NoLoginFavorite = {};
+    var LoggedinFavorite = {
+        key     : '',
+        expires : '',
+        value   : [],
+        vids    : []
+    };
+
+    var FAVORITE_FOOTER_STATUS = {
+        DEFAULT  : 3,
+        MINIMIZED: 1,
+        MAXIMIZED: 2,
+        CLOSED   : 3
+    };
+
+    function login_check(callback){
+        $.ajaxSetup({async: false});
+        $.getJSON(
+            login_url+'/clients/signin/?callback=?',
+            function(data, status){
+                var respObj=eval("("+JSON.stringify(data)+")");
+                var result = respObj.callbacks.result;
+                callback(result);
+            }
+        );
+    }
+
+    function success_get_bookmarks(data, textStatus){
+        setFavoriteCount(0);
+
+        var respObj=eval("("+JSON.stringify(data)+")");
+        if(!respObj.callbacks.result){
+            closeFavoriteFooter();
+            return;
+        }
+
+        var veh_ids = respObj.callbacks.ids;
+        if(veh_ids.length == 0){
+            closeFavoriteFooter();
+            return;
+        }
+
+        $.each(veh_ids, function(i, veh_id){
+            append_mark(veh_id);
+        });
+
+        getVehicleDetails(veh_ids, {is_initial_caller: true});
+        LoggedinFavorite.vids = veh_ids;
+
+        if (getNoLoginFavoriteCookieKey()) {
+            var params = {
+                async      : false,
+                rendering  : false,
+                append_mark: false
+            };
+            getNoLoginFavorite(params);
+        }
+    }
+
+    function appendLoggedinFavorite(vid) {
+        var vids = LoggedinFavorite.vids;
+        var len = vids.length;
+        for (var i = 0; i < len; i++) {
+            if (vids[i] === vid) {
+                return false;
+            }
+        }
+
+        LoggedinFavorite.vids.unshift(vid);
+        getVehicleDetails(LoggedinFavorite.vids);
+
+        if (getNoLoginFavoriteFooterStatus() === FAVORITE_FOOTER_STATUS.CLOSED) {
+            maximizeFavoriteFooter();
+        }
+
+        return true;
+    }
+    function removeLoggedinFavorite(vid) {
+        var vids = LoggedinFavorite.vids;
+        var len  = vids.length;
+        for (var i = 0; i < len; i++) {
+            if (vids[i].toString() === vid.toString()) {
+                LoggedinFavorite.vids.splice(i, 1);
+                break;
+            }
+        }
+
+        getVehicleDetails(LoggedinFavorite.vids);
+        return true;
+    }
+
+    function append_mark(veh_id) {
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").show();
+        $('[data-veh-id="'+veh_id+'"]').removeClass('bookmark-spin');
+        $('[data-bookmark-veh-id="'+veh_id+'"]').removeClass('icon-bookmark icon-spinner icon-animate-spin').addClass('icon-bookmark-add');
+
+        var targetButtons = $('.button-favorite-' + veh_id);
+        targetButtons.removeClass('button-favorite-add').addClass('button-favorite-added');
+        targetButtons.attr('data-status', 'added');
+
+        if (!__isLoggedIn()) {
+            $('.fn-discount-alert-button').removeClass('button-favorite-added').addClass('button-favorite-add');
+        }
+    }
+
+    function remove_mark(veh_id) {
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").show();
+        $('[data-veh-id="'+veh_id+'"]').removeClass('bookmark-spin');
+        $('[data-bookmark-veh-id="'+veh_id+'"]').removeClass('icon-bookmark-add icon-spinner icon-animate-spin').addClass('icon-bookmark');
+
+        var targetButtons = $('.button-favorite-' + veh_id);
+        targetButtons.removeClass('button-favorite-added').addClass('button-favorite-add');
+        targetButtons.attr('data-status', 'add');
+    }
+
+    function rotate_mark(veh_id) {
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").hide();
+        $('[data-veh-id="'+veh_id+'"]').addClass('bookmark-spin');
+        $('[data-bookmark-veh-id="'+veh_id+'"]').removeClass('icon-bookmark icon-bookmark-add').addClass('icon-spinner icon-animate-spin');
+    }
+
+    function popup_message(veh_id, popup_id) {
+        if (is_stocklist) {
+            $.magnificPopup.open({
+                items: {src: popup_id},
+                mainClass: 'notify-me',
+                type: 'inline',
+                modal: false,
+                showCloseBtn: false,
+                preloader: false,
+            }, 0);
+        } else {
+            $('[data-veh-id="'+veh_id+'"]').powerTip("show");
+        }
+    }
+
+    function success_add(data) {
+        if (data.callbacks.result == 'Success') {
+            append_mark(data.callbacks.veh_id);
+
+            appendLoggedinFavorite(data.callbacks.veh_id);
+        }
+    }
+
+    function success_add_from_signin(data) {
+        if (!is_stocklist) {
+            $('[data-veh-id="'+data.callbacks.veh_id+'"]').data('powertip', 'The vehicle has been added to Favorites.');
+        }
+        if (data.callbacks.result == 'Success') {
+            append_mark(data.callbacks.veh_id);
+            popup_message(data.callbacks.veh_id, '#add-favorites-complete');
+
+            appendLoggedinFavorite(data.callbacks.veh_id);
+        }
+    }
+
+    function success_remove(data) {
+        if (data.callbacks.result) {
+            var veh_id = data.callbacks.veh_id;
+            remove_mark(veh_id);
+
+            removeLoggedinFavorite(veh_id);
+
+            deleteNoLoginFavorite(veh_id, {rendering: false});
+        }
+    }
+
+    function add_bookmark(veh_id) {
+        rotate_mark(veh_id);
+        showSpinner();
+
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").hide();
+
+        $.ajax({
+            url : login_url + '/bookmark/add/',
+            type : 'post',
+            dataType : 'jsonp',
+            data : {authkey: authkey, veh_id: veh_id},
+            timeout: 10000
+        }).success(
+            success_add
+        ).error(function(jqXHR, textStatus, errorThrown) {
+            remove_mark(veh_id);
+            $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").show();
+            console.error(errorThrown);
+            return false;
+        });
+    }
+
+    function add_bookmark_from_signin(veh_id) {
+        rotate_mark(veh_id);
+        showSpinner();
+
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").hide();
+
+        $.ajax({
+            url : login_url + '/bookmark/add/',
+            type : 'post',
+            dataType : 'jsonp',
+            data : {authkey: authkey, veh_id: veh_id},
+            timeout: 10000
+        }).success(
+            success_add_from_signin
+        ).error(function(jqXHR, textStatus, errorThrown) {
+            remove_mark(veh_id);
+            $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").show();
+            console.error(errorThrown);
+            return false;
+        });
+    }
+
+    function remove_bookmark(veh_id) {
+        rotate_mark(veh_id);
+        showSpinner();
+
+        $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").hide();
+
+        $.ajax({
+            url : login_url + '/api/remove_bookmark/',
+            type : 'post',
+            dataType : 'jsonp',
+            data : {authkey: authkey, veh_id: veh_id},
+            timeout: 10000
+        }).success(
+            success_remove
+        ).error(function(jqXHR, textStatus, errorThrown) {
+            append_mark(veh_id);
+            $('[data-veh-id="'+veh_id+'"]').children(".bookmark-statement").show();
+            console.error(errorThrown);
+            return false;
+        });
+    }
+
+    function click_button(veh_id) {
+        $.ajax({
+            type: 'post',
+            url: login_url + '/api/is_bookmarked/',
+            dataType: "jsonp",
+            data: {authkey: authkey, veh_id: veh_id},
+            timeout: 10000
+        }).success(function(is_bookmarked) {
+            if (!is_bookmarked.callbacks.result) {
+                add_bookmark(is_bookmarked.callbacks.veh_id);
+            } else {
+                remove_bookmark(is_bookmarked.callbacks.veh_id);
+            }
+        });
+    }
+
+    // Page Loading
+    if (getNoLoginFavoriteFooterStatus() === FAVORITE_FOOTER_STATUS.CLOSED) {
+        closeFavoriteFooter();
+    } else {
+        minimizeFavoriteFooter();
+        showSpinner();
+    }
+    if(authkey === '') {
+        loadNoLoginFavorite();
+    } else {
+        login_check(function(login_result){
+            if(login_result){
+                $.ajax({
+                    type: 'post',
+                    url: login_url + '/api/get_vehicle_bookmarks/',
+                    dataType: "jsonp",
+                    data: {authkey: authkey},
+                    timeout: 10000
+                }).success(
+                    success_get_bookmarks
+                );
+            }
+        });
+    }
+
+    // Click Favorite Button
+    //NOT $(document) but $('#content')
+    $('#content').on('click', '.fn-add-bookmark', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+
+        var authkey = cookie_check();
+
+        if(authkey === ''){
+            var veh_id = $(this).data('veh-id') || 0;
+            var vid = __parseInt(veh_id);
+
+            if (!getNoLoginFavoriteCookieKey()) {
+                showFavoriteFirstTimeModal(vid);
+                return false;
+            }
+
+            updateNoLoginFavorite(vid);
+            return true;
+        }
+
+        click_button($(this).data('veh-id'));
+        return false;
+    });
+
+    $(document).on('click', '#fn-favorite-first-time-modal', function(e){
+        var vid = $('#fn-favorite-first-time-modal').attr('data-vid') || 0;
+        updateNoLoginFavorite(__parseInt(vid), {favorite_footer_status: 'maximized'});
+
+        close_jqm_popup('#fn-favorite-first-time-modal-popup');
+    });
+
+
+    $(document).on('click', '#fn-favorite-reached-a-limit-modal-popup-close-button', function(e){
+        close_jqm_popup('#fn-favorite-reached-a-limit-modal-popup');
+        return false;
+    });
+
+    $(document).on('click', '#fn-favorite-reached-a-limit-button-create-account', function(e){
+        gaEventFavoriteReachedLimitCreateAccountClicked();
+
+        window.open(login_url + '/clients/signup/?authConfirmFlag=1&favoriteDialogFlag=1', '_self');
+    });
+
+
+    $(document).on('click', '#fn-header-middle-favorite', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+
+        var favorite_count = __parseInt($('#fn-favorite-count').attr('data-favorite-count'));
+        if (favorite_count > 0 && ($('.favorites-footer-contents').css('height') === '0px' ||  $('.favorites-footer-menu-bar').css('height') === '0px')) {
+            maximizeFavoriteFooter();
+        } else {
+            minimizeFavoriteFooter();
+        }
+    });
+
+
+    $(document).on('click', '.fn-remove-favorite', function(e){
+        e.preventDefault();
+        e.stopPropagation();
+
+        var authkey = cookie_check();
+        if(authkey === ''){
+            var vid = $(this).data('veh-id') || 0;
+            deleteNoLoginFavorite(vid);
+
+            return true;
+        }
+
+        click_button($(this).data('veh-id'));
+        return false;
+    });
+
+    function toggleFavoriteFooterContents() {
+        if ($('.favorites-footer-contents').css('height') === '0px') {
+            maximizeFavoriteFooter();
+        } else {
+            minimizeFavoriteFooter();
+        }
+    }
+
+    function showFavoriteFirstTimeModal(vid) {
+        var popup = $('#fn-favorite-first-time-modal-popup');
+        var body = $('#fn-favorite-first-time-modal-popup-body');
+        var close_button = $('#fn-favorite-first-time-modal-popup-close-button');
+        var clone_target = $('#fn-favorite-first-time-modal');
+
+        popup.jqm({
+            modal: true,
+            onHide: function (hash) {
+                hash.w.fadeOut('100', function () {
+                    hash.o.remove();
+                    body.removeClass('bfw_modal_style');
+                });
+            }
+        });
+        popup.jqmShow();
+        body.addClass('bfw_modal_style');
+        close_button.show();
+
+        var cloned_target = clone_target.clone();
+        cloned_target.attr('data-vid', vid);
+        cloned_target.show();
+        popup.html('');
+        popup.append(cloned_target);
+
+        return false;
+    }
+
+    function showFavoriteReachedLimitModal(vid) {
+        var popup = $('#fn-favorite-reached-a-limit-modal-popup');
+        var body = $('#fn-favorite-reached-a-limit-modal-popup-body');
+        var close_button = $('#fn-favorite-reached-a-limit-modal-popup-close-button');
+        var clone_target = $('#fn-favorite-reached-a-limit-modal');
+        popup.jqm({
+            modal: true,
+            onHide: function (hash) {
+                hash.w.fadeOut('100', function () {
+                    hash.o.remove();
+                    body.removeClass('bfw_modal_style');
+
+                    remove_mark(vid);
+                    hideSpinner();
+                });
+            }
+        });
+        popup.jqmShow();
+        body.addClass('bfw_modal_style');
+        close_button.show();
+
+        var cloned_target = clone_target.clone();
+        cloned_target.show();
+        popup.html('');
+        popup.append(cloned_target);
+
+        gaEventFavoriteReachedLimitPopUp();
+
+        return false;
+    }
+
+    function showFavoriteFooterContents() {
+        $('#favorites-footer-wrap').css('visibility', 'visible');
+        $('.favorites-footer-contents').removeClass('favorites-footer-contents-close');
+        $('.favorites-footer-contents').addClass('favorites-footer-contents-active');
+
+        $('#fn-icon-max-min-box').removeClass('icon-favorites-show');
+        $('#fn-icon-max-min-box').removeClass('icon-favorites-minimize');
+        $('#fn-icon-max-min-box').addClass('icon-favorites-minimize');
+
+        $('#fn-label-max-min-box').html('');
+
+        var favorite_count = __parseInt($('#fn-favorite-count').attr('data-favorite-count'), 10) || 0;
+        if (favorite_count === 0) {
+            createEmptyHtml();
+        }
+    }
+
+    function hideFavoriteFooterContents() {
+        $('.favorites-footer-contents').removeClass('favorites-footer-contents-active');
+        $('.favorites-footer-contents').addClass('favorites-footer-contents-close');
+
+        $('#fn-icon-max-min-box').removeClass('icon-favorites-show');
+        $('#fn-icon-max-min-box').removeClass('icon-favorites-minimize');
+        $('#fn-icon-max-min-box').addClass('icon-favorites-show');
+
+        $('#fn-label-max-min-box').html('');
+    }
+
+    function showFavoriteFooterMenuBar() {
+        $('#favorites-footer-wrap').css('visibility', 'visible');
+        $('.favorites-footer-menu-bar').removeClass('favorites-footer-contents-close');
+    }
+
+    function hideFavoriteFooterMenuBar() {
+        $('.favorites-footer-menu-bar').removeClass('favorites-footer-contents-close');
+        $('.favorites-footer-menu-bar').addClass('favorites-footer-contents-close');
+    }
+
+    function closeFavoriteFooter() {
+        hideFavoriteFooterContents();
+        hideFavoriteFooterMenuBar();
+        hideSpinner();
+
+        setFavoriteFooterStatusCookie(FAVORITE_FOOTER_STATUS.CLOSED);
+
+        downFixedButtonArea();
+        downChatPlugin();
+    }
+
+    function minimizeFavoriteFooter() {
+        hideFavoriteFooterContents();
+        showFavoriteFooterMenuBar();
+
+        setFavoriteFooterStatusCookie(FAVORITE_FOOTER_STATUS.MINIMIZED);
+
+        upFixedButtonArea();
+        downChatPlugin();
+    }
+
+    function maximizeFavoriteFooter() {
+        showFavoriteFooterContents();
+        showFavoriteFooterMenuBar();
+
+        setFavoriteFooterStatusCookie(FAVORITE_FOOTER_STATUS.MAXIMIZED);
+
+        upChatPlugin();
+    }
+
+    function upChatPlugin() {
+        var target = $('#ch-plugin-launcher').get(0);
+        if (target) {
+            $('#ch-plugin-launcher').offset({top: $('#fn-favorites-footer-contents').offset().top - 35 - $('#ch-plugin-launcher').height() - 5});
+
+            $('#favorites-footer-wrap').css('z-index', 20000000);
+        }
+    }
+
+    $('#fn-favorites-footer-contents').on('transitionend', function (event) {
+        if (getNoLoginFavoriteFooterStatus() === FAVORITE_FOOTER_STATUS.MAXIMIZED && event.originalEvent.propertyName === 'max-height') {
+            upChatPlugin();
+        }
+    });
+
+    function downChatPlugin() {
+        var target = $('#ch-plugin-launcher').get(0);
+        if (target) {
+            $('#ch-plugin-launcher').css('bottom', '35px');
+            $('#ch-plugin-launcher').css('top', '');
+
+            $('#favorites-footer-wrap').css('z-index', 10000);
+        }
+    }
+
+    function upFixedButtonArea() {
+        var target = $('.fixed-button-area').get(0);
+        if (target) {
+            $('.fixed-button-area').css('bottom', '35px');
+        }
+    }
+
+    function downFixedButtonArea() {
+        var target = $('.fixed-button-area').get(0);
+        if (target) {
+            $('.fixed-button-area').css('bottom', 0);
+        }
+    }
+
+    $(window).resize(function () {
+        if (getNoLoginFavoriteFooterStatus() === FAVORITE_FOOTER_STATUS.MAXIMIZED) {
+            $('#ch-plugin-launcher').offset({top: $('#fn-favorites-footer-contents').offset().top - 35 - $('#ch-plugin-launcher').height() - 5});
+        }
+    });
+
+    $(document).on('click', '.fn-favorites-footer-menu-bar', function () {
+        toggleFavoriteFooterContents();
+    });
+
+    $(document).on('click', '#fn-favorite-footer-close', function (event) {
+        event.stopPropagation();
+
+        gaEventFavoriteCloseFooter();
+        closeFavoriteFooter();
+    });
+
+    function getNoLoginFavoriteApiUrl() {
+        var api_endpoint = $('#fn-api-endpoint').val();
+
+        if (!api_endpoint) {
+            throw new Error('Invalid API endpoint.');
+        }
+
+        return api_endpoint;
+    }
+
+    function generateNoLoginFavoriteCookie(current_cookie_key, current_cookie_cl) {
+        var cookie_key = '';
+        if (current_cookie_key === '') {
+            cookie_key = $('#fn-cookie-fv').val() || '';
+        } else {
+            cookie_key = current_cookie_key;
+        }
+
+        if (cookie_key === '') {
+            console.error('Invalid NoLoginFavorite cookie!!(set)');
+            throw new Error('Invalid NoLoginFavorite cookie!!(set)');
+        }
+
+        var cookie_cl = current_cookie_cl ? current_cookie_cl : FAVORITE_FOOTER_STATUS.DEFAULT;
+
+        var cookie_value = {
+            key: cookie_key,
+            cl: cookie_cl
+        };
+
+        writeFavorite('wwwbf[fv]', cookie_value, {expires: __getLocalCookieExpires(), domain: '.beforward.jp', path: '/', json: true});
+
+        return cookie_key;
+    }
+
+    function getNoLoginFavoriteCookie() {
+        return readFavoriteCookie('wwwbf[fv]') || {};
+    }
+
+    function getNoLoginFavoriteFooterStatus() {
+        return getNoLoginFavoriteCookieCl();
+    }
+
+    function getNoLoginFavoriteCookieCl() {
+        var cookie_fv = getNoLoginFavoriteCookie();
+
+        if (__isEmptyObject(cookie_fv)) {
+            return FAVORITE_FOOTER_STATUS.DEFAULT;
+        }
+
+        var cl = __parseInt(cookie_fv.cl);
+
+        return cl;
+    }
+
+    function setFavoriteFooterStatusCookie(cl) {
+        var cookie_fv = getNoLoginFavoriteCookie();
+
+        cookie_fv.cl = cl;
+
+        writeFavorite('wwwbf[fv]', cookie_fv, {expires: __getLocalCookieExpires(), domain: '.beforward.jp', path: '/', json: true});
+    }
+
+
+    function __getLocalCookieExpires() {
+        return new Date('2038-01-01 09:00:00');
+    }
+
+    function getExpireTimestamp() {
+        var now = new Date();
+
+        now_ts = Math.floor(now.getTime() / 1000);
+
+        jst = now_ts + (now.getTimezoneOffset() * 60) + 60 * 60 * 9;
+
+        expires = jst + 60 * 60 * 24 * 180;
+
+        return expires;
+    }
+
+    function getCurrentDateTimeString() {
+        var now = new Date();
+
+        var utc_millisec = now.getTime() + (now.getTimezoneOffset() * 60 * 1000);
+
+        var jst_millisec = utc_millisec + 60 * 60 * 9 * 1000;
+
+        var jst = new Date(jst_millisec);
+        var str = jst.getFullYear() + '-' +
+            ('0' + (jst.getMonth() + 1)).slice(-2) + '-' +
+            ('0' + jst.getDate()).slice(-2) + ' ' +
+            ('0' + jst.getHours()).slice(-2) + ':' +
+            ('0' + jst.getMinutes()).slice(-2) + ':' +
+            ('0' + jst.getSeconds()).slice(-2);
+
+        return str;
+    }
+
+    function createNoLoginFavoriteSkelton() {
+        var current_cookie_key = getNoLoginFavoriteCookieKey();
+        var current_cookie_cl = getNoLoginFavoriteCookieCl();
+
+        var cookie_key = generateNoLoginFavoriteCookie(current_cookie_key, current_cookie_cl);
+
+        var skelton = {
+            expires: getExpireTimestamp(),
+            key: cookie_key,
+            value: [],
+
+            vids: [],
+        };
+
+        NoLoginFavorite = skelton;
+
+        return NoLoginFavorite;
+    }
+
+    function getNoLoginFavoriteCount() {
+        var vids = getNoLoginFavoriteVids();
+
+        return vids.length;
+    }
+
+    function updateNoLoginFavorite(vid, params) {
+        rotate_mark(vid);
+        showSpinner();
+
+        var vids = getNoLoginFavoriteVids();
+
+
+        if (vids.indexOf(vid) < 0) {
+            if (getNoLoginFavoriteCount() >= 8) {
+                showFavoriteReachedLimitModal(vid);
+                return false;
+            }
+
+            putNoLoginFavorite(vid);
+        } else {
+            deleteNoLoginFavorite(vid, params);
+        }
+
+        return true;
+    }
+
+    function getNoLoginFavoriteVids() {
+        var vids = [];
+
+        if (NoLoginFavorite && NoLoginFavorite.value) {
+            Object.keys(NoLoginFavorite.value).forEach(function (idx) {
+                var value = NoLoginFavorite.value[idx];
+                vids.push(value.vid);
+            });
+
+            NoLoginFavorite.vids = vids;
+        }
+
+        return vids;
+    }
+
+    function getNoLoginFavoriteCookieKey() {
+        var cookie_fv = readFavoriteCookie('wwwbf[fv]');
+
+        var key = '';
+        if (cookie_fv) {
+            key = cookie_fv.key || '';
+        }
+
+        if (key) {
+            return key;
+        } else {
+            return '';
+        }
+    }
+
+    function loadNoLoginFavorite() {
+        var cookie_key = getNoLoginFavoriteCookieKey();
+
+        if (cookie_key) {
+            showSpinner();
+            getNoLoginFavorite({is_initial_caller: true});
+        } else {
+            setFavoriteCount(0);
+            closeFavoriteFooter();
+        }
+    }
+
+    function __getVal(obj, prop, default_value) {
+        if (obj === undefined) {
+            return default_value;
+        } else if (obj.hasOwnProperty(prop)) {
+            return obj[prop];
+        }
+
+        return default_value;
+    }
+
+    function getNoLoginFavorite(params) {
+        var do_async = __getVal(params, 'async', true);
+        var do_rendering = __getVal(params, 'rendering', true);
+        var do_append_mark = __getVal(params, 'append_mark', true);
+        var is_initial_caller = __getVal(params, 'is_initial_caller', false);
+
+        var data = {
+            key: getNoLoginFavoriteCookieKey()
+        };
+        $.ajax({
+            url: getNoLoginFavoriteApiUrl(),
+            type: 'GET',
+            data: data,
+            cache: false,
+            async: do_async,
+            success: function (resp) {
+                var vids = [];
+                var data = resp.data || {};
+                NoLoginFavorite = data;
+
+                if (do_append_mark) {
+                    if (Object.keys(data).length) {
+                        vids = getNoLoginFavoriteVids();
+                        $.each(vids, function (i, vids) {
+                            append_mark(vids);
+                        });
+                    }
+                }
+
+                if (do_rendering) {
+                    getVehicleDetails(vids, {is_initial_caller: is_initial_caller});
+                }
+            },
+            error: function (jqXHR, textStatus, errorThrown) {
+                console.error(textStatus + ' ' + errorThrown);
+            }
+        });
+    }
+
+
+    function __prepareForUpdate(obj) {
+        var prepared = {
+            key: obj.key,
+            expires: obj.expires,
+            value: obj.value
+        };
+
+        return prepared;
+    }
+
+    function __isEmptyObject(obj) {
+        return Object.keys(obj).length === 0;
+    }
+
+    function putNoLoginFavorite(vid) {
+        if (__isEmptyObject(NoLoginFavorite)) {
+            createNoLoginFavoriteSkelton();
+        }
+
+        var hasVid = false;
+        Object.keys(NoLoginFavorite.value).forEach(function (idx) {
+            var val = NoLoginFavorite.value[idx];
+
+            if (vid === val.vid) {
+                hasVid = true;
+            }
+        });
+
+        if (hasVid) {
+            return false;
+        }
+
+        NoLoginFavorite.value.unshift(
+            {
+                s: 'm',
+                vid: vid,
+                ad: getCurrentDateTimeString()
+            }
+        );
+
+        NoLoginFavorite.vids.unshift(vid);
+
+        var preparedNoLoginFavorite = __prepareForUpdate(NoLoginFavorite);
+
+        $.ajax({
+            url: getNoLoginFavoriteApiUrl(),
+            contentType: 'application/json',
+            cache: false,
+            type: 'PUT',
+            data: JSON.stringify(preparedNoLoginFavorite),
+            success: function (resp) {
+                var vids = [];
+                var data = resp.data || {};
+                NoLoginFavorite = data;
+
+                append_mark(vid);
+
+                if (Object.keys(data).length) {
+                    $.each(data.value, function (idx, value) {
+                        vids.push(value.vid);
+                    });
+
+                    getVehicleDetails(vids, {maximize_if_closed: true});
+                }
+            },
+            error: function (jqXHR, textStatus, errorThrown) {
+                console.error(textStatus + ' ' + errorThrown);
+            }
+        });
+    }
+
+
+    function deleteNoLoginFavorite(vid, params) {
+        var cookie_key = getNoLoginFavoriteCookieKey();
+
+        var rendering = __getVal(params, 'rendering', true);
+
+        if (!__isLoggedIn() && !cookie_key) {
+            console.error('Invalid NoLoginFavorite cookie!!(delete)');
+            return false;
+        }
+
+        if (__isEmptyObject(NoLoginFavorite) || !NoLoginFavorite.value) {
+            return false;
+        }
+
+        var len = NoLoginFavorite.value.length;
+
+        for (var i = 0; i < len; i++) {
+            var val = NoLoginFavorite.value[i];
+            if (vid.toString() === (val.vid).toString()) {
+                NoLoginFavorite.value.splice(i, 1);
+                break;
+            }
+        }
+
+        var preparedNoLoginFavorite = __prepareForUpdate(NoLoginFavorite);
+        $.ajax({
+            url: getNoLoginFavoriteApiUrl(),
+            contentType: 'application/json',
+            cache: false,
+            type: 'PUT',
+            data: JSON.stringify(preparedNoLoginFavorite),
+            success: function (resp) {
+                var vids = [];
+                remove_mark(vid);
+                var data = resp.data || {};
+                NoLoginFavorite = data;
+
+                gaEventDeleteFavorite();
+
+                if (Object.keys(data).length) {
+                    $.each(data.value, function (idx, value) {
+                        vids.push(value.vid);
+                    });
+
+                    if (rendering) {
+                        getVehicleDetails(vids);
+                    }
+                }
+            },
+            error: function (jqXHR, textStatus, errorThrown) {
+                console.error(textStatus + ' ' + errorThrown);
+            }
+        });
+    }
+
+
+    function getVehicleDetails(vids, params) {
+        $('#fn-favorites-is-empty').css('display', 'none');
+
+        setFavoriteCount(vids.length);
+
+        if (vids.length === 0) {
+            createEmptyHtml();
+            hideSpinner();
+            return false;
+        }
+
+
+        var _vids = vids;
+        if (vids.length > 8) {
+            _vids = vids.slice(0, 8);
+        }
+
+        var favorite_footer_status = getNoLoginFavoriteFooterStatus();
+
+        var maximize_if_closed = __getVal(params, 'maximize_if_closed', false);
+
+        var is_initial_caller = __getVal(params, 'is_initial_caller', false);
+
+        var data = {
+            vids: _vids,
+            current_lang: $('#fn-current-lang').val()
+        };
+
+        var url = '/ajax/get_vehicle_details';
+        $.ajax({
+            url: url,
+            type: 'get',
+            data: data,
+            cache: false,
+            success: function (resp) {
+                var vehicle_details = resp || [];
+
+                if (!__isValidApiResponse(vehicle_details, _vids)) {
+                    throw new Error('Invalid API response.');
+                }
+
+                createHtml(vehicle_details);
+
+                if (favorite_footer_status === FAVORITE_FOOTER_STATUS.MAXIMIZED) {
+                    if (is_initial_caller) {
+                        minimizeFavoriteFooter();
+                    } else {
+                        maximizeFavoriteFooter();
+                    }
+                } else if (favorite_footer_status === FAVORITE_FOOTER_STATUS.CLOSED) {
+                    if (maximize_if_closed) {
+                        maximizeFavoriteFooter();
+                    } else {
+                        closeFavoriteFooter();
+                    }
+                } else {
+                    minimizeFavoriteFooter();
+                }
+                hideSpinner();
+            },
+            error: function (jqXHR, textStatus, errorThrown) {
+                console.error(textStatus + ' ' + errorThrown);
+            }
+        });
+    }
+
+    function __isValidApiResponse(vehicle_details, vids) {
+        var request_vids = [];
+        var response_vids = [];
+        $.each(vehicle_details, function (idx, val) {
+            response_vids.push(__parseInt(val.VehicleDetail.veh_id));
+        });
+        $.each(vids, function (idx, val) {
+            request_vids.push(__parseInt(val));
+        });
+
+        response_vids.sort();
+        request_vids.sort();
+        return JSON.stringify(response_vids) === JSON.stringify(request_vids);
+    }
+
+    function createEmptyHtml() {
+        closeFavoriteFooter();
+    }
+
+    function __isLoggedIn() {
+        var authkey = cookie_check();
+        return authkey !== '';
+    }
+
+    $(document).on('click', '.fn-ga-event-image-link-clicked', function () {
+        gaEventImageLinkClicked();
+    });
+    $(document).on('click', '.fn-ga-event-vehicle-name-link-clicked', function () {
+        gaEventVehicleNameLinkClicked();
+    });
+
+    $(document).on('click', '.fn-ga-event-view-all-my-account', function () {
+        gaEventViewAllMyAccount();
+    });
+
+    function gaEventImageLinkClicked() {
+        if (__isLoggedIn()) {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'vehicle_image_link', 'event_val': 1, 'event_non_int': true});
+        } else {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'vehicle_image_link_no_login', 'event_val': 1, 'event_non_int': true});
+        }
+    }
+
+    function gaEventVehicleNameLinkClicked() {
+        if (__isLoggedIn()) {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'vehicle_link', 'event_val': 1, 'event_non_int': true});
+        } else {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'vehicle_link_no_login', 'event_val': 1, 'event_non_int': true});
+        }
+    }
+
+    function gaEventDeleteFavorite() {
+        if (__isLoggedIn()) {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'delete_button', 'event_val': 1, 'event_non_int': true});
+        } else {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'delete_button_no_login', 'event_val': 1, 'event_non_int': true});
+        }
+    }
+
+    function gaEventViewAllMyAccount() {
+        if (__isLoggedIn()) {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'mypage_link', 'event_val': 1, 'event_non_int': true});
+        } else {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'mypage_link_no_login', 'event_val': 1, 'event_non_int': true});
+        }
+    }
+
+    function gaEventFavoriteCloseFooter() {
+        if (__isLoggedIn()) {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'close_button', 'event_val': 1, 'event_non_int': true});
+        } else {
+            window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_fv_bar', 'event_act': 'click', 'event_lab': 'close_button_no_login', 'event_val': 1, 'event_non_int': true});
+        }
+    }
+
+
+    function gaEventFavoriteReachedLimitPopUp() {
+        if (__isCalledFromVehicleDetailPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_detail', 'event_act': 'pupup', 'event_lab': 'fv_new_account', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_detail', 'event_act': 'pupup', 'event_lab': 'fv_new_account_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        } else if (__isCalledFromStocklistPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_stocklist', 'event_act': 'pupup', 'event_lab': 'fv_new_account', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_stocklist', 'event_act': 'pupup', 'event_lab': 'fv_new_account_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        } else if (__isCalledFromRecentlyCheckedPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_recently_checked', 'event_act': 'pupup', 'event_lab': 'fv_new_account', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_recently_checked', 'event_act': 'pupup', 'event_lab': 'fv_new_account_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        }
+    }
+
+    function gaEventFavoriteReachedLimitCreateAccountClicked() {
+        if (__isCalledFromVehicleDetailPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_detail', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_detail', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        } else if (__isCalledFromStocklistPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_stocklist', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_stocklist', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        } else if (__isCalledFromRecentlyCheckedPage()) {
+            if (__isLoggedIn()) {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_recently_checked', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button', 'event_val': 1, 'event_non_int': true});
+            } else {
+                window.dataLayer.push({'event': 'ga_event', 'event_cat': 'sp_recently_checked', 'event_act': 'click', 'event_lab': 'fv_new_account_pupup_button_no_login', 'event_val': 1, 'event_non_int': true});
+            }
+        }
+    }
+
+    function __getPageTag() {
+        return $('#fn-page-tag').val() || '';
+    }
+
+    function __isCalledFromStocklistPage() {
+        var page_tag = __getPageTag();
+        return page_tag === 'stocklist';
+    }
+
+    function __isCalledFromVehicleDetailPage() {
+        var page_tag = __getPageTag();
+        return page_tag === 'vehicle_detail';
+    }
+
+    function __isCalledFromRecentlyCheckedPage() {
+        var page_tag = __getPageTag();
+        return page_tag === 'recently_checked';
+    }
+
+
+    function createHtml(vehicle_details) {
+        $('#fn-favorites-footer-contents').children('.favorites-footer-vehicle-box-wrap').remove();
+
+        $.each(vehicle_details, function (idx, val) {
+            var VehicleDetail = val.VehicleDetail;
+            var StockArea = val.StockArea;
+
+            var is_under_offer = VehicleDetail.ex_under_offer;
+            var is_sold = VehicleDetail.ex_sold_flg;
+            var veh_id = VehicleDetail.veh_id;
+
+            var html = '';
+
+            if (idx === 7) {
+                html += '<div class="favorites-footer-vehicle-box-wrap no-border-right" id="fn-' + veh_id + '">';
+            } else {
+                html += '<div class="favorites-footer-vehicle-box-wrap" id="fn-' + veh_id + '">';
+            }
+
+            html += '        <div class="favorites-footer-vehicle-box fn-favorites-footer-vehicle-box" data-vehicle-link-url="' + VehicleDetail.ex_vehicle_url + '">';
+            html += '            <div class="favorites-footer-vehicle-image-box">';
+            html += '                <div id="wrap-' + veh_id + '" class="favorites-footer-vehicle-image-box-wrap">';
+            html += '                    <a href="' + VehicleDetail.ex_vehicle_url + '" class="fn-ga-event-image-link-clicked">';
+            if (is_sold) {
+                html += '                    <img class="favorites-footer-vehicle-image sold-layer-img" alt="" src="' + VehicleDetail.ex_car_img_thumb + '"/>';
+                html += '                    <span class="sold-layer-text">SOLD</span>';
+            } else {
+                html += '                    <img id="img-' + veh_id + '" class="favorites-footer-vehicle-image" alt="" src="' + VehicleDetail.ex_car_img_thumb + '" />';
+            }
+            html += '                    </a>';
+
+            html += '                    <div class="favorites-footer-vehicle-veh-stock-no-layer">' + VehicleDetail.veh_stock_no + '</div>';
+            html += '                </div><!-- /favorites-footer-vehicle-image-box-wrap -->';
+            html += '            </div><!-- /favorites-footer-vehicle-image-box -->';
+
+            html += '            <div class="favorites-footer-vehicle-right-box">';
+            html += '                <a href="' + VehicleDetail.ex_vehicle_url + '" class="fn-ga-event-vehicle-name-link-clicked">';
+            html += '                   <div id="favorites-footer-vehicle-make-title-' + veh_id + '" class="favorites-footer-vehicle-make-title">' + VehicleDetail.ex_make_model_title + ' ' + VehicleDetail.ex_model_grade + '</div>';
+            html += '                </a>';
+
+            if (is_sold) {
+                html += '            <div class="favorites-footer-vehicle-price-box is-sold">SOLD</div>';
+            } else if (is_under_offer) {
+                html += '            <div class="favorites-footer-vehicle-price-box is-under-offer">UNDER OFFER</div>';
+            } else {
+                if (VehicleDetail.ex_fob_price === 'ASK') {
+                    html += '        <div class="favorites-footer-vehicle-price-box is-ask">';
+                    html += '            <span class="favorites-footer-vehicle-price-ask">' + VehicleDetail.ex_fob_price + '</span>';
+                } else {
+                    html += '        <div class="favorites-footer-vehicle-price-box">';
+                    html += '            <span class="favorites-footer-vehicle-price"><span class="currency-label">' + VehicleDetail.ex_currency_label + '</span>' + VehicleDetail.ex_currency_prefix + VehicleDetail.ex_fob_price + '</span>';
+                }
+                if (VehicleDetail.ex_save_rate) {
+                    html += '            <span class="favorites-footer-save-rate">' + VehicleDetail.ex_save_rate + '%</span>';
+                    html += '            <span class="favorites-footer-save-rate-off">OFF</span>';
+                }
+
+                html += '            </div>';
+            }
+            html += '                <div class="favorites-footer-vehicle-spec-box">';
+            html += '                    <div class="favorites-footer-vehicle-spec mileage">' + (VehicleDetail.ex_mileage ? VehicleDetail.ex_mileage : '-') + '</div>';
+            html += '                    <div class="favorites-footer-vehicle-spec year">' + (VehicleDetail.ex_model_year ? VehicleDetail.ex_model_year : '-') + '</div>';
+            html += '                    <div class="favorites-footer-vehicle-spec cc">' + (VehicleDetail.ex_cc ? VehicleDetail.ex_cc + ' cc' : '-') + '</div>';
+            html += '                    <div class="favorites-footer-vehicle-spec trans">' + VehicleDetail.ex_trans + '</div>';
+            html += '                </div>';
+            html += '                <div class="favorites-footer-vehicle-location-box">';
+            html += '                    <i class="location-flag i-' + StockArea.COUNTRY_ID + '"></i><span class="location-name">' + StockArea.ex_stock_area + '</span>';
+            html += '                </div>';
+            html += '            </div><!-- /favorites-footer-vehicle-right-box -->';
+            html += '            <div class="remove-favorite-button-background">';
+            html += '                <a class="bf-btn bf-btn-small remove-favorite-button fn-remove-favorite" href="" data-veh-id="' + veh_id + '">';
+            html += '                    <img class="remove-favorite-button-icon-close-alt" alt="close" src="/assets/images/no-login-favorite/icon-close-alt.png">';
+            html += '                </a>';
+            html += '            </div>';
+            html += '        </div><!-- /favorites-footer-vehicle-box -->';
+            html += '    </div><!-- /favorites-footer-vehicle-box-wrap -->';
+
+            $(html).appendTo('#fn-favorites-footer-contents').hide().fadeIn(500);
+
+            __clamp(veh_id);
+        });
+    }
+
+    function showSpinner() {
+        $('#fn-favorite-count').hide();
+        $('#fn-favorite-count-spin').css('display', 'inline-block');
+    }
+
+    function hideSpinner() {
+        $('#fn-favorite-count-spin').hide();
+        $('#fn-favorite-count').show();
+    }
+
+    function setFavoriteCount(favorite_count) {
+        $('#fn-favorite-count').html(favorite_count);
+
+        $('.fn-favorites-count').html(favorite_count);
+
+        $('#fn-favorite-count').attr('data-favorite-count', favorite_count);
+
+        $('#fn-header-middle-favorite-count').html(favorite_count);
+        $('#fn-view-all-vehicle-count').html(favorite_count);
+
+        $('#fn-view-all-vehicle-count-loggedin').html('see all ' + __number_format(__parseInt(favorite_count)) + ' vehicles');
+        $('#fn-view-all-vehicle-count-loggedin').css('font-weight', 'normal');
+
+        if (favorite_count === 0) {
+            $('#fn-header-middle-favorite-count').html(favorite_count);
+            $('#fn-header-middle-icon-btn-favorite').hide();
+            $('#fn-header-middle-icon-btn-favorite-empty').show();
+        } else {
+            $('#fn-header-middle-icon-btn-favorite').show();
+            $('#fn-header-middle-icon-btn-favorite-empty').hide();
+        }
+    }
+
+    function __number_format(val) {
+        return String(val).replace( /(\d)(?=(\d\d\d)+(?!\d))/g, '$1,');
+    }
+
+    function __parseInt(val) {
+        return parseInt(val, 10) || 0;
+    }
+
+    $(window).on('scroll', function () {
+        $('.fn-favorites-footer-wrap').css('left', -$(window).scrollLeft());
+    });
+
+    function __clamp(vid) {
+        var userAgent = window.navigator.userAgent.toLowerCase();
+        if (userAgent.indexOf('msie') !== -1 || userAgent.indexOf('trident') !== -1) {
+            __clampIE($('#favorites-footer-vehicle-make-title-' + vid));
+        } else {
+            var target = $('#favorites-footer-vehicle-make-title-' + vid).get(0);
+            $clamp(target, {clamp: 2});
+        }
+    }
+
+    function __clampIE(target) {
+        var text = target.html();
+
+        var cloned = target.clone();
+        cloned.css('visibility', 'hidden');
+        cloned.css('position', 'absolute');
+        cloned.css('overflow', 'visible');
+        cloned.css('width', target.innerWidth());
+        cloned.css('height', 'auto');
+        target.append(cloned);
+
+        while ((text.length > 0) && (cloned.innerHeight() > target.innerHeight())) {
+            text = text.substr(0, text.length - 1);
+            cloned.html(text + '...');
+        }
+
+        target.html(cloned.html());
+    }
+
+    function writeFavorite(key, value, options) {
+        if (isSafari()) {
+            $.ajax({
+                url: '/ajax/set_favorite_cookie',
+                type: 'GET',
+                data: value,
+                cache: false,
+                async: false,
+                success: function (resp) {
+                    if (resp.error && resp.message) {
+                        console.error(resp.message);
+                    }
+                },
+                error: function (jqXHR, textStatus, errorThrown) {
+                    console.error(textStatus + ' ' + errorThrown);
+                }
+            });
+        } else {
+            if (value === null) {
+                options.expires = -1;
+            }
+            if (typeof options.expires === 'number') {
+                var days = options.expires, t = options.expires = new Date();
+                t.setDate(t.getDate() + days);
+            }
+
+            value = options.json ? JSON.stringify(value) : String(value);
+
+            return (document.cookie = [
+                key, '=', options.raw ? value : encodeURIComponent(value),
+                options.expires ? '; expires=' + options.expires.toUTCString() : '',
+                options.path ? '; path=' + options.path : '',
+                options.domain ? '; domain=' + options.domain : '',
+                options.secure ? '; secure' : ''
+            ].join(''));
+        }
+    }
+
+    function isSafari() {
+        var userAgent = window.navigator.userAgent.toLowerCase();
+        if (userAgent.indexOf('edg') !== -1 ||
+            userAgent.indexOf('edge') !== -1 ||
+            userAgent.indexOf('edga') !== -1 ||
+            userAgent.indexOf('edgios') !== -1) {
+            //edge
+        } else if (userAgent.indexOf('opera') !== -1 || userAgent.indexOf('opr') !== -1) {
+            //opera
+        } else if (userAgent.indexOf('chrome') !== -1 || userAgent.indexOf('crios') !== -1) {
+            //chrome
+        } else if (userAgent.indexOf('firefox') !== -1 || userAgent.indexOf('fxios') !== -1) {
+            //firefox
+        } else if (userAgent.indexOf('safari') !== -1) {
+            //safari
+            return true;
+        } else if (userAgent.indexOf('msie') !== -1 || userAgent.indexOf('trident') !== -1) {
+            //ie
+        }
+        return false;
+    }
+
+    function readFavoriteCookie(key) {
+        var is_json = true;
+        var is_raw = false;
+
+        var decode = is_raw ? raw : __decodeFavoriteCookie;
+        var cookies = document.cookie.split('; ');
+        for (var i = 0, parts; (parts = cookies[i] && cookies[i].split('=')); i++) {
+            if (decode(parts.shift()) === key) {
+                var cookie = decode(parts.join('='));
+                return is_json ? JSON.parse(cookie) : cookie;
+            }
+        }
+
+        return null;
+    }
+
+    function __decodeFavoriteCookie(s) {
+        var pluses = /\+/g;
+        return decodeURIComponent(s.replace(pluses, ' '));
+    }
+
+    function close_jqm_popup(selector) {
+        $(selector).jqmHide();
+    }
+});
+
+
+
